@@ -1,21 +1,32 @@
 #include "PID.h"
+#include <iostream>
 
-using namespace std;
+PID::PID() : p_error_(0), i_error_(0), d_error_(0) {}
 
-/*
-* TODO: Complete the PID class.
-*/
-
-PID::PID() {}
-
-PID::~PID() {}
-
-void PID::Init(double Kp, double Ki, double Kd) {
+void PID::Init(double kp, double ki, double kd) {
+  kp_ = kp;
+  ki_ = ki;
+  kd_ = kd;
+  ResetState();
 }
 
-void PID::UpdateError(double cte) {
+void PID::UpdateError(double cte, double dt) {
+  i_error_ += cte;
+  d_error_ = (cte - p_error_) / dt;
+  p_error_ = cte;
 }
 
-double PID::TotalError() {
+double PID::GetControl() {
+  return -kp_ * p_error_ - kd_ * d_error_ - ki_ * i_error_;
 }
 
+void PID::ResetState() {
+  i_error_ = 0;
+  p_error_ = 0;
+  d_error_ = 0;
+}
+
+std::ostream& operator<<(std::ostream& os, const PID& pid) {
+  os << "Kp=" << pid.kp_ << ", Ki=" << pid.ki_ << ", Kd=" << pid.kd_;
+  return os;
+}
