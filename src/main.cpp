@@ -31,6 +31,7 @@ std::string hasData(std::string s) {
 class RMSEAccumulator {
  public:
   RMSEAccumulator() : sum_(0), count_(0) {}
+  RMSEAccumulator(double sum, unsigned count) : sum_(sum), count_(count) {}
 
   void Add(double value) {
     sum_ += value * value;
@@ -49,10 +50,22 @@ class RMSEAccumulator {
   unsigned count_;
 };
 
+enum class ResetMode { None, Repeat, Finish };
+
+template <typename T>
+std::ostream &operator<<(std::ostream &os, const std::vector<T> &coll) {
+  const char *delim = "";
+  os << "[";
+  for (const auto &item : coll) {
+    os << delim << item;
+    delim = ", ";
+  }
+  os << "]";
+  return os;
+}
+
 class TwiddleOptimizer {
  public:
-  enum class ResetMode { None, Repeat, Finish };
-
   TwiddleOptimizer(unsigned updates_per_iteration)
       : updates_per_iteration_(updates_per_iteration),
         current_iteration_(0),
@@ -194,7 +207,7 @@ class TwiddleOptimizer {
 int main() {
   uWS::Hub h;
 
-  bool training_mode = true;
+  bool training_mode = false;
   const unsigned training_steps_limit = 1500;
 
   std::cout << "Training mode: " << training_mode << std::endl;
@@ -206,7 +219,7 @@ int main() {
   pid.Init(opt.kp(), opt.ki(), opt.kd());
   std::cout << "Steering PID: " << pid << std::endl;
 
-  const double target_speed = 60.0;
+  const double target_speed = 30.0;
 
   PID speed_pid;
   speed_pid.Init(1, 0.001, 0.1);  // target_speed = 30.0
@@ -261,9 +274,9 @@ int main() {
 
           if (training_mode) {
             switch (opt.Update(cte)) {
-              case TwiddleOptimizer::ResetMode::None:
+              case ResetMode::None:
                 break;
-              case TwiddleOptimizer::ResetMode::Repeat: {
+              case ResetMode::Repeat: {
                 std::cout << "Results of last run: " << std::endl;
                 std::cout << "Updating optimizer" << std::endl;
                 pid.Init(opt.kp(), opt.ki(), opt.kd());
@@ -271,7 +284,7 @@ int main() {
                 speed_pid.ResetState();
                 send_reset = true;
               } break;
-              case TwiddleOptimizer::ResetMode::Finish: {
+              case ResetMode::Finish: {
                 std::cout << "Finished!" << std::endl;
                 training_mode = false;
               } break;

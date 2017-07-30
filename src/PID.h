@@ -1,46 +1,30 @@
 #ifndef PID_H
 #define PID_H
 
+#include <iosfwd>
+
 class PID {
-public:
-  /*
-  * Errors
-  */
-  double p_error;
-  double i_error;
-  double d_error;
-
-  /*
-  * Coefficients
-  */ 
-  double Kp;
-  double Ki;
-  double Kd;
-
-  /*
-  * Constructor
-  */
+ public:
   PID();
 
-  /*
-  * Destructor.
-  */
-  virtual ~PID();
-
-  /*
-  * Initialize PID.
-  */
   void Init(double Kp, double Ki, double Kd);
 
-  /*
-  * Update the PID error variables given cross track error.
-  */
-  void UpdateError(double cte);
+  void UpdateError(double cte, double dt);
 
-  /*
-  * Calculate the total PID error.
-  */
-  double TotalError();
+  double GetControl();
+
+  void ResetState();
+
+  friend std::ostream& operator<<(std::ostream& os, const PID& pid);
+
+ private:
+  double p_error_;
+  double i_error_;
+  double d_error_;
+
+  double kp_;
+  double ki_;
+  double kd_;
 };
 
 #endif /* PID_H */
