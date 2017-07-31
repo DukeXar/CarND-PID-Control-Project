@@ -2,8 +2,10 @@
 #include <uWS/uWS.h>
 #include <chrono>
 #include <iostream>
+#include <list>
 #include "PID.h"
 #include "json.hpp"
+#include "wip/optimizer.h"
 
 // for convenience
 using json = nlohmann::json;
@@ -28,42 +30,6 @@ std::string hasData(std::string s) {
   return "";
 }
 
-class RMSEAccumulator {
- public:
-  RMSEAccumulator() : sum_(0), count_(0) {}
-  RMSEAccumulator(double sum, unsigned count) : sum_(sum), count_(count) {}
-
-  void Add(double value) {
-    sum_ += value * value;
-    count_++;
-  }
-
-  double Get() const { return sqrt(sum_ / count_); }
-
-  void Reset() {
-    sum_ = 0;
-    count_ = 0;
-  }
-
- private:
-  double sum_;
-  unsigned count_;
-};
-
-enum class ResetMode { None, Repeat, Finish };
-
-template <typename T>
-std::ostream &operator<<(std::ostream &os, const std::vector<T> &coll) {
-  const char *delim = "";
-  os << "[";
-  for (const auto &item : coll) {
-    os << delim << item;
-    delim = ", ";
-  }
-  os << "]";
-  return os;
-}
-
 class TwiddleOptimizer {
  public:
   TwiddleOptimizer(unsigned updates_per_iteration)
@@ -76,9 +42,13 @@ class TwiddleOptimizer {
     d_[1] = 0.05;
     d_[2] = 1;
 
-    k_[0] = 0.424788;
+    // k_[0] = 0.424788;
+    // k_[1] = 0.0;
+    // k_[2] = 20.912;
+
+    k_[0] = 0.0;
     k_[1] = 0.0;
-    k_[2] = 20.912;
+    k_[2] = 0.0;
 
     // k_[0] = 0.424788;
     // k_[1] = 0;
@@ -204,22 +174,52 @@ class TwiddleOptimizer {
   RMSEAccumulator rmse_;
 };
 
+class SlidingWindowAvg {
+ public:
+  explicit SlidingWindowAvg(size_t limit) : limit_(limit) {}
+
+  void Add(double value) {
+    sum_ += value;
+    values_.push_back(value);
+    if (values_.size() > limit_) {
+      sum_ -= values_.front();
+      values_.pop_front();
+    }
+  }
+
+  bool IsFull() const { return values_.size() == limit_; }
+
+  bool IsEmpty() const { return values_.empty(); }
+
+  double Avg() const { return sum_ / values_.size(); }
+
+  void Reset() {
+    values_.clear();
+    sum_ = 0;
+  }
+
+ private:
+  size_t limit_;
+  std::list<double> values_;
+  double sum_;
+};
+
 int main() {
   uWS::Hub h;
 
-  bool training_mode = false;
-  const unsigned training_steps_limit = 1500;
+  bool training_mode = true;
+  const unsigned training_steps_limit = 4500;
 
   std::cout << "Training mode: " << training_mode << std::endl;
   std::cout << "Training steps: " << training_steps_limit << std::endl;
 
-  TwiddleOptimizer opt(training_steps_limit);
+  HillClimbingOptimizer opt(training_steps_limit);
 
   PID pid;
   pid.Init(opt.kp(), opt.ki(), opt.kd());
   std::cout << "Steering PID: " << pid << std::endl;
 
-  const double target_speed = 30.0;
+  const double target_speed = 20.0;
 
   PID speed_pid;
   speed_pid.Init(1, 0.001, 0.1);  // target_speed = 30.0
@@ -229,10 +229,12 @@ int main() {
   bool start_processing = false;
   auto start_time = std::chrono::high_resolution_clock::now();
 
+  SlidingWindowAvg avg_speed(50);
+
   h.onMessage([&pid, &speed_pid, target_speed, &training_mode, &opt,
-               &start_processing, &start_time](uWS::WebSocket<uWS::SERVER> ws,
-                                               char *data, size_t length,
-                                               uWS::OpCode opCode) {
+               &start_processing, &start_time,
+               &avg_speed](uWS::WebSocket<uWS::SERVER> ws, char *data,
+                           size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message
     // event.
     // The 4 signifies a websocket message
@@ -246,13 +248,15 @@ int main() {
           bool send_reset = false;
 
           auto now = std::chrono::high_resolution_clock::now();
-          auto delta_time = now - start_time;
+          using sec = std::chrono::duration<double>;
+          auto delta_time = std::chrono::duration_cast<sec>(now - start_time);
+          // std::cout << delta_time.count() << std::endl;
           start_time = now;
 
           // On first run, delta can be large, try to cope with that and still
           // produce control by assuming we just started.
-          if (delta_time.count() > 1) {
-            delta_time = std::chrono::milliseconds(1);
+          if (delta_time > sec(1.0)) {
+            delta_time = sec(1.0);
           }
 
           // j[1] is the data JSON object
@@ -269,11 +273,27 @@ int main() {
             steer_value = 1;
           }
 
+          avg_speed.Add(speed);
           speed_pid.UpdateError(speed - target_speed, delta_time.count());
-          double throttle = speed_pid.GetControl();
 
           if (training_mode) {
-            switch (opt.Update(cte)) {
+            const bool too_diverged = (std::abs(cte) > 4);
+            const bool is_stuck = (avg_speed.IsFull() && avg_speed.Avg() < 0.1);
+            const bool bad_update = too_diverged || is_stuck;
+            if (bad_update) {
+              std::cout << "Bad state: ";
+              if (too_diverged) {
+                std::cout << "too diverged from target";
+                if (is_stuck) {
+                  std::cout << ", ";
+                }
+              }
+              if (is_stuck) {
+                std::cout << "stuck (speed zero)";
+              }
+              std::cout << std::endl;
+            }
+            switch (opt.Update(cte, bad_update)) {
               case ResetMode::None:
                 break;
               case ResetMode::Repeat: {
@@ -282,6 +302,7 @@ int main() {
                 pid.Init(opt.kp(), opt.ki(), opt.kd());
                 std::cout << "Steering PID: " << pid << std::endl;
                 speed_pid.ResetState();
+                avg_speed.Reset();
                 send_reset = true;
               } break;
               case ResetMode::Finish: {
@@ -298,7 +319,7 @@ int main() {
           } else {
             json msgJson;
             msgJson["steering_angle"] = steer_value;
-            msgJson["throttle"] = throttle;
+            msgJson["throttle"] = speed_pid.GetControl();
             auto msg = "42[\"steer\"," + msgJson.dump() + "]";
             // std::cout << msg << std::endl;
             ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);

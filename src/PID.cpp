@@ -11,6 +11,7 @@ void PID::Init(double kp, double ki, double kd) {
 }
 
 void PID::UpdateError(double cte, double dt) {
+  // std::cout << "dt=" << dt << std::endl;
   i_error_ += cte;
   d_error_ = (cte - p_error_) / dt;
   p_error_ = cte;
